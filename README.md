@@ -123,3 +123,6 @@ graph TB
 
 ![TrustLens AI Architecture Diagram](assets/architecture_diagram.png)
 
+## Demo Script
+
+A full conversational presentation script for this project is available in [`DEMO_SCRIPT.txt`](DEMO_SCRIPT.txt).

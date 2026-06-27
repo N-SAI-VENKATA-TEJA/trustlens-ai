@@ -116,3 +116,10 @@ graph TB
    .env          ← your API key — must NEVER be pushed
    .venv/
    ```
+
+## Assets
+
+![TrustLens AI Cover Banner](assets/cover_page_banner.png)
+
+![TrustLens AI Architecture Diagram](assets/architecture_diagram.png)
+

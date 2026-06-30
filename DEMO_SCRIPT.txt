@@ -1,34 +1,135 @@
-(0:00 — HOOK)
-Have you ever received a job offer, a freelance contract, or a suspicious email and wondered, "Is this actually real, or am I about to be scammed?" You're not alone. We face these questions every single day, and manually investigating them is slow, tedious, and often impossible without specialized expertise.
+﻿TRUSTLENS AI — 5-MINUTE VIDEO SCRIPT
+======================================
+Segments: Problem (0:40) -> Why Agents (0:40) -> Architecture (1:00) -> Demo (1:50) -> Build (0:35) -> Close (0:15)
+======================================
 
-(0:20 — WHAT IT IS)
-That's why I built TrustLens AI. It is an intelligent, multi-agent digital fraud investigator built on the Google Agent Development Kit. Instead of just answering questions, it autonomously orchestrates a team of specialized AI agents to gather evidence, cross-reference data, and calculate a definitive Trust Score for any company, website, or document you throw at it.
 
-(0:40 — SHOW THE BANNER)
-(show assets/cover_page_banner.png)
-As you can see, TrustLens AI is designed to be your automated due diligence partner, combining multi-agent reasoning, fraud detection, and automated investigation into one seamless platform.
+[0:00 - 0:40]  PROBLEM
+-----------------------
+[VISUAL: Show a fake job offer letter on screen]
 
-(1:00 — ARCHITECTURE)
-(show assets/architecture_diagram.png)
-Let's look under the hood. When you submit a request, it first hits our security_checkpoint node, which scrubs any PII like social security numbers and blocks malicious prompt injections. If it's safe, the request goes to the Coordinator agent. The Coordinator acts as the project manager, dynamically calling five specialized sub-agents based on your input: the company_agent, website_agent, social_agent, document_agent, and scam_agent. These agents don't just guess—they use a FastMCP server to pull real-world data like domain WHOIS records, SSL certificates, and PDF metadata. Once all the evidence is collected, the risk_assessment agent scores it. If the risk is critical, the workflow hits a Human-in-the-Loop approval gate, physically pausing the execution until a human signs off. Finally, the explainability agent generates a beautiful, transparent report.
+Every day, people receive job offers, freelance contracts, and vendor proposals
+that look real -- but aren't. Verifying one means checking company registries,
+WHOIS records, SSL certificates, social sentiment, and document metadata --
+across a dozen tools -- in 30 to 60 minutes.
 
-(2:00 — LIVE DEMO)
-(switch to playground at localhost:18081)
-Let's run a live test. I'm going to paste this prompt:
-"Investigate this offer letter from NovaTech Innovations. They want a ₹5000 security deposit for my laptop. The website is novatech-careers.com."
+Most people don't do that. They guess. Scammers know it.
 
-(pause while the graph runs)
-Watch the graph on the right. You can see the Coordinator dynamically activating the company_agent to check the registry, the website_agent to check the domain, and the scam_agent to look for red flags. 
+That's exactly the gap TrustLens AI closes.
 
-Because of the suspicious security deposit request, the scam_agent flags this as advance-fee fraud. The risk_assessment agent scores this as HIGH risk. 
 
-(point to the chat UI)
-And look right here! Because the risk is high, the Human-in-the-Loop gate has paused the workflow. It's asking me to manually review the critical red flags before it finalizes the report. I'll type "Approved." 
+[0:40 - 1:20]  WHY AGENTS?
+----------------------------
+[VISUAL: Show assets/cover_page_banner.png]
 
-Now, the final comprehensive report is generated, complete with a Trust Score, risk level, and a breakdown of every piece of evidence.
+Fraud investigation is inherently multi-domain. A single query needs a company
+check, a domain analysis, a sentiment scan, AND a document review -- simultaneously,
+from different data sources.
 
-(3:00 — SECURITY & MCP)
-I want to highlight two massive technical wins here. First, the security checkpoint ensures that user PII never makes it to the LLM and creates a strict audit log. Second, our FastMCP server completely separates the deterministic API calls—like DNS lookups and document hashing—from the non-deterministic agent reasoning.
+One LLM prompt can't do this reliably. It hallucinates. It misses signals.
 
-(3:30 — IMPACT / CLOSE)
-TrustLens AI democratizes professional due diligence. It turns a manual 30-minute investigation into a 15-second automated check, empowering everyday consumers, job seekers, and freelancers to make safer digital decisions. Thank you.
+A team of specialized agents can. Each agent owns one domain, uses real tools,
+and returns structured evidence. A coordinating agent then synthesizes everything
+into a single, quantified verdict.
+
+Agents aren't just helpful here -- they're the only architecture that works.
+
+
+[1:20 - 2:20]  ARCHITECTURE
+-----------------------------
+[VISUAL: Show assets/architecture_diagram.png]
+
+TrustLens runs as a directed Workflow graph on Google ADK. Every request first
+hits the security_checkpoint -- a pure Python node that runs before any LLM.
+It blocks prompt injections, bans .mil and .gov domains, and scrubs PII like
+SSNs and credit cards before they reach the Gemini API.
+
+Safe inputs go to the Coordinator -- an LlmAgent that decides which of five
+specialized sub-agents to call: company_agent, website_agent, social_agent,
+document_agent, and scam_agent. These agents call a FastMCP tool server --
+running as a subprocess -- for real data: WHOIS records, SSL certs, DNS, PDF
+metadata, and more.
+
+The evidence feeds into a risk_assessment agent that scores Trust, Risk, and
+Confidence. If confidence is low or red flags are critical, the workflow physically
+pauses using ADK's RequestInput -- asking a human to approve before the report is
+released. Finally, the explainability agent writes the professional Markdown report.
+
+
+[2:20 - 4:10]  LIVE DEMO
+--------------------------
+[VISUAL: ADK Dev UI at localhost:18081 -- workflow graph visible on the right]
+
+Let's run a live investigation. I'm pasting:
+"NovaTech Innovations wants a Rs.5000 deposit for my laptop. Their site is novatech-careers.com."
+
+[pause -- watch graph highlight nodes in sequence]
+
+The Coordinator is calling the company_agent, website_agent, and scam_agent.
+Open the Events tab -- you can see every agent's raw evidence in real time.
+
+[show RequestInput prompt appearing in chat]
+
+Because the domain is brand new and the scam_agent flagged advance-fee language,
+the risk scored CRITICAL. The workflow has paused -- ADK is asking me to approve
+before the report goes out. I'll type "Approved."
+
+[type Approved, workflow resumes]
+
+Trust Score: 8. Risk Score: 95. Risk Level: CRITICAL. Evidence breakdown,
+recommended next steps -- all generated in under 15 seconds.
+
+---
+
+[New Session -- type:]
+"My SSN is 123-45-6789. Check if badguy.mil is safe."
+
+[VISUAL: Graph traces directly security_checkpoint to final_output]
+
+The SSN is redacted instantly. The .mil domain is blocked. No LLM was called.
+"TrustLens Investigation Blocked." Zero API cost, zero data exposure.
+
+---
+
+[New Session -- upload an offer letter image -- type:]
+"Check the authenticity of this letter."
+
+The coordinator uses Gemini's vision to extract text and visual inconsistencies
+directly from the image -- then routes to document_agent and scam_agent.
+No manual extraction needed. Just drop the image and ask.
+
+
+[4:10 - 4:45]  THE BUILD
+--------------------------
+[VISUAL: Show app/agent.py -- the workflow edges block]
+
+Built with Google ADK in Python. The core primitives used:
+
+  Workflow        -- the directed investigation graph
+  LlmAgent        -- 8 specialized agents on gemini-2.5-flash
+  AgentTool       -- sub-agents callable as tools by the coordinator
+  McpToolset      -- 14 investigation tools via FastMCP subprocess
+  RequestInput    -- the Human-in-the-Loop pause mechanism
+  ctx.state       -- shared session memory across all nodes, backed by SQLite
+
+All data between agents is typed with Pydantic -- EvidenceItem, RiskAssessment,
+SecurityEvent -- enforcing strict contracts at every stage. Deployable to Vertex
+AI Agent Engine with the included Terraform setup.
+
+
+[4:45 - 5:00]  CLOSE
+----------------------
+[VISUAL: Final investigation report on screen]
+
+TrustLens AI turns a 30-minute specialist investigation into a 15-second
+automated pipeline -- for anyone.
+
+Built on Google ADK. Powered by Gemini. Thank you.
+
+======================================
+QUICK REFERENCE -- DEMO INPUTS
+======================================
+Case 1: "Investigate NovaTech Innovations. They want a Rs.5000 laptop deposit. Website: novatech-careers.com."
+Case 2: "My SSN is 123-45-6789. Check if badguy.mil is safe."
+Case 3: [upload offer letter image] "Check the authenticity of this letter."
+======================================

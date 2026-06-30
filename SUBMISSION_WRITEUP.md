@@ -1,71 +1,252 @@
 # TrustLens AI — Submission Write-Up
 
 ## Problem Statement
-Digital fraud, fake companies, phishing domains, and forged documents affect individuals and businesses daily. When users receive suspicious job offers, freelance contracts, or vendor proposals, verifying their authenticity requires manually checking multiple disjointed sources (company registries, WHOIS databases, social media, document metadata). Because this is time-consuming and requires specialized expertise, users often rely on intuition, making them vulnerable to sophisticated scams.
 
-## Solution Architecture
-TrustLens AI solves this by acting as an automated digital fraud investigator. Using a Multi-Agent architecture powered by the Google Agent Development Kit (ADK), it orchestrates a team of specialized AI agents that independently investigate companies, websites, social reputation, and documents, synthesizing all evidence into a single, structured Trust Score and risk report.
+Digital fraud is a growing epidemic. Fake companies, phishing domains, forged offer letters, and advance-fee scams affect millions of job seekers, freelancers, and small businesses every year. When a person receives a suspicious job offer, a vendor proposal, or a freelance client inquiry, verifying its authenticity requires checking multiple disconnected sources simultaneously — corporate registries, WHOIS databases, DNS records, SSL certificates, social sentiment, news archives, and document metadata. This process is slow, inconsistent, and demands specialist knowledge that most individuals do not have.
 
-```mermaid
-graph TB
-    UI[Browser UI] --> |HTTP SSE| Server[ADK Server]
-    Server --> |Execution| Workflow[trustlens_workflow]
-    
-    subgraph Workflow Nodes
-        SC[security_checkpoint]
-        Coord[coordinator LlmAgent]
-        RA[risk_assessment LlmAgent]
-        HR[human_review Gate]
-    end
-    
-    subgraph Sub-Agents
-        CA[company_agent]
-        WA[website_agent]
-        SA[social_agent]
-        DA[document_agent]
-        SCA[scam_agent]
-    end
-    
-    subgraph Tools
-        MCP[FastMCP Server]
-    end
-    
-    Workflow --> SC
-    SC -- SAFE --> Coord
-    Coord --> CA & WA & SA & DA & SCA
-    CA & WA & SA & DA --> MCP
-    Coord --> RA
-    RA --> HR
+The result is that people fall back on intuition, and sophisticated scammers exploit exactly this gap. A domain registered yesterday can be made to look indistinguishable from a legitimate business. A forged offer letter from a convincing company name is almost impossible to detect without technical tools. The barrier to performing proper due diligence is simply too high for the average user.
+
+**TrustLens AI** eliminates this barrier entirely. It acts as an always-available, automated digital fraud investigator that performs professional-grade due diligence in seconds, through a conversational interface, for anyone.
+
+---
+
+## Solution Overview
+
+TrustLens AI is a backend-first Python application built on the **Google Agent Development Kit (ADK)**. It orchestrates a team of eight specialised AI agents arranged in a directed workflow graph to investigate an entity — a company, a domain, a document, or a person — from multiple independent angles simultaneously. All findings are synthesised into a single structured **Trust Score**, **Risk Score**, **Confidence Score**, and a professional investigation report delivered back to the user.
+
+Users interact through the ADK Dev UI at `http://127.0.0.1:18081`. They can provide free-text queries, paste document content, supply domain names, or upload images of physical documents. The system handles all investigation logic autonomously and returns a complete Markdown report — including an executive summary, categorised evidence, and specific recommended next steps — within seconds.
+
+---
+
+## Architecture
+
+TrustLens AI is structured as a **multi-layer, graph-based multi-agent system**.
+
+### Technology Stack
+
+| Layer | Component | Technology |
+|---|---|---|
+| AI Orchestration | ADK Workflow | `google.adk.workflow.Workflow` |
+| Agents | 8 × LlmAgent | `gemini-2.5-flash` via Gemini API |
+| Tool Server | MCP Server | `FastMCP` (subprocess, stdio) |
+| Session Storage | SQLite | ADK-managed `session.db` |
+| Backend Server | ADK Web Server | FastAPI + Uvicorn (`:18081`) |
+| Production Runtime | Vertex AI Agent Engine | `AdkApp` + `GcsArtifactService` |
+| Telemetry | OpenTelemetry | `opentelemetry-instrumentation-google-genai` |
+| Package Manager | uv | `pyproject.toml` + `uv.lock` |
+
+### Workflow Graph
+
+The entire investigation lifecycle is encoded as an explicit directed graph with named edges and conditional routing:
+
+```
+START
+  └─► security_checkpoint
+         ├─[SECURITY_EVENT]─► final_output
+         └─[SAFE]───────────► coordinator
+                                  │
+                          (AgentTool calls)
+                        ┌─────┬──┴──┬─────┬─────┐
+                  company  website social document scam
+                   _agent   _agent  _agent  _agent  _agent
+                        └─────┴──┬──┴─────┴─────┘
+                                  │
+                         evidence_aggregator
+                                  │
+                        risk_assessment_agent
+                                  │
+                       pre_human_review_state
+                                  │
+                        explainability_agent
+                                  │
+                           human_review
+                          ┌───────┴──────────┐
+                    [needs_review]        [auto-approved]
+                     RequestInput              │
+                     (pauses UI)              │
+                          └───────┬──────────┘
+                                  │
+                           final_output
 ```
 
-## Concepts Used
+---
 
-- **ADK Workflow (`app/agent.py`)**: The entire investigation is structured as a directed graph. The `Workflow` class ties together synchronous Python nodes and async LLM Agents into a resilient pipeline.
-- **LlmAgent (`app/agent.py`)**: We deployed 7 distinct `LlmAgent` instances, each with highly specialized system instructions (e.g., `company_agent`, `scam_agent`, `risk_assessment_agent`), preventing hallucinations and enforcing domain-specific reasoning.
-- **AgentTool (`app/agent.py`)**: The `coordinator` LLM Agent uses `AgentTool` to dynamically call the specialized sub-agents based on the user's input, creating a true hierarchical agent architecture.
-- **MCP Server (`app/mcp_server.py`)**: We implemented 14 specific fraud-investigation tools (like `whois_lookup` and `pdf_metadata`) using the Model Context Protocol (FastMCP), running as a subprocess to keep tool execution isolated from agent reasoning.
-- **Security Checkpoint (`app/agent.py`)**: A synchronous Python `@node` running before the LLMs to sanitize inputs and block malicious injections.
-- **Agents CLI**: Used extensively (`make playground` / `uv run adk web app`) to iterate and visualize the execution graph in real-time.
+## ADK Concepts Used
+
+### 1. ADK Workflow (`app/agent.py`)
+
+The investigation is defined using `google.adk.workflow.Workflow` — a directed graph engine that orchestrates both synchronous Python nodes and async LLM Agent nodes in a single pipeline. Edges between nodes can carry named routes (e.g., `SAFE`, `SECURITY_EVENT`), enabling deterministic conditional branching without any if-else logic scattered across the codebase. The workflow definition in `agent.py` is explicit and readable:
+
+```python
+workflow = Workflow(
+    name="trustlens_workflow",
+    edges=[
+        ('START', security_checkpoint),
+        (security_checkpoint, {"SAFE": coordinator, "SECURITY_EVENT": final_output}),
+        (coordinator, evidence_aggregator),
+        (evidence_aggregator, risk_assessment_agent),
+        (risk_assessment_agent, pre_human_review_state),
+        (pre_human_review_state, explainability_agent),
+        (explainability_agent, human_review),
+        (human_review, final_output)
+    ]
+)
+```
+
+### 2. LlmAgent (`app/agent.py`)
+
+We deployed **8 distinct `LlmAgent` instances**, each with a precisely scoped system instruction that enforces domain-specific reasoning and prevents hallucinations through over-generalisation. Each agent is isolated: it cannot call tools that belong to another agent's domain, and its instruction tells it exactly what to output. The agents are:
+
+- **`coordinator`** — Investigation orchestrator; routes to sub-agents and consolidates evidence
+- **`company_agent`** — Verifies corporate registration, history, and physical address
+- **`website_agent`** — Investigates domain age, WHOIS, SSL, DNS, and hosting
+- **`social_agent`** — Analyses public sentiment, news mentions, and review scores
+- **`document_agent`** — Examines documents and images for forgery indicators and metadata anomalies
+- **`scam_agent`** — Detects language-based fraud patterns (urgency, advance-fee, impossible promises)
+- **`risk_assessment_agent`** — Calculates quantitative risk scores from aggregated evidence (no investigation)
+- **`explainability_agent`** — Converts structured data into a professional Markdown investigation report
+
+### 3. AgentTool (`app/agent.py`)
+
+The `coordinator` uses `AgentTool` to call each specialised sub-agent as if it were a regular tool. This creates a true **hierarchical multi-agent architecture** where the coordinator decides at runtime which combination of agents is relevant to the user's specific input. For example, a query mentioning a company name and a domain triggers `company_agent` and `website_agent`; a plain suspicious text message may only trigger `scam_agent`. The coordinator wraps all five sub-agents:
+
+```python
+tools=[
+    AgentTool(company_agent),
+    AgentTool(website_agent),
+    AgentTool(social_agent),
+    AgentTool(document_agent),
+    AgentTool(scam_agent),
+    mcp_toolset
+]
+```
+
+### 4. MCP Server (`app/mcp_server.py`)
+
+We implemented a **Model Context Protocol (MCP) tool server** using `FastMCP`, launched as a subprocess by the ADK and connected via stdin/stdout JSON-RPC. This architecture keeps tool execution completely isolated from agent reasoning. The MCP server exposes **14 domain-specific investigation tools** across four categories:
+
+| Category | Tools |
+|---|---|
+| Company | `search_company_registry` |
+| Website | `whois_lookup`, `dns_lookup`, `ssl_inspection`, `website_metadata`, `check_domain_reputation`, `url_reputation` |
+| Document | `pdf_metadata`, `document_hash`, `qr_decoder` |
+| Social/Reputation | `search_social_sentiment`, `news_search`, `review_search`, `virus_scan` |
+
+The `McpToolset` is shared across all investigation agents that need tool access. The `scam_agent` and the reasoning-only agents (`risk_assessment_agent`, `explainability_agent`) do not use the toolset, keeping their reasoning clean and uncontaminated by external data calls.
+
+### 5. Pure Python Workflow Nodes (`@node`)
+
+Three critical pipeline stages are implemented as deterministic Python `@node` functions rather than LLM agents — a deliberate design choice to avoid non-determinism where structure and correctness matter most:
+
+- **`security_checkpoint`** — Synchronous node running before any LLM is called; performs security screening, PII scrubbing, and input routing
+- **`evidence_aggregator`** — Synchronous node that parses the coordinator's JSON output, extracts the evidence list, and stores it in session state
+- **`pre_human_review_state`** — Synchronous node that bridges the risk assessment output into session state so the `human_review` node can read the `needs_review` flag later
+- **`final_output`** — Terminal node that assembles the complete investigation report from session state fragments
+
+### 6. Async Human-in-the-Loop (`human_review` @node)
+
+The `human_review` node is an **async generator node** — the most sophisticated node in the pipeline. It reads `ctx.state["risk_assessment"]["needs_review"]` to determine whether the investigation's confidence is sufficient for automatic delivery, or whether it requires human approval before publishing the report. When review is required, it `yield`s a `RequestInput` event, which physically **pauses the entire workflow** and presents a prompt in the Dev UI chat box. The ADK runner suspends execution at this node and waits. When the user responds (e.g., "Approved"), the runner resumes the node via `ctx.resume_inputs`, stores the human decision in session state, and forwards the report to `final_output`.
+
+### 7. Session State (`ctx.state`)
+
+The ADK's `ctx.state` dictionary, backed by SQLite, serves as the memory layer shared across all nodes in the workflow. Intermediate results — the aggregated evidence list, the risk assessment JSON, the Markdown report draft, the human approval decision, and the investigation timeline — are all stored and read through `ctx.state`. This eliminates the need for any custom database or message-passing infrastructure.
+
+### 8. ADK Dev UI & Agents CLI
+
+The `make playground` command (`uv run adk web app --host 127.0.0.1 --port 18081 --reload_agents`) launches the ADK's built-in development UI, which provides a real-time graph visualisation panel showing each node's execution state (highlighted green when active), an Events tab streaming every intermediate agent output, and a Trace tab showing the complete OpenTelemetry span for each run. This was used extensively during development to debug agent routing and evidence quality.
+
+---
 
 ## Security Design
-The `security_checkpoint` node acts as a zero-trust gateway:
-- **Prompt Injection Defense**: Scans for keywords like "ignore previous" to prevent attackers from manipulating the investigation logic.
-- **PII Scrubbing**: Uses Regex to redact SSNs, Credit Cards, Phone Numbers, and Emails before they reach the Gemini API, protecting user privacy.
-- **Domain Blocklisting**: Hard-blocks `.gov` and `.mil` domains from being investigated to prevent accidental reconnaissance against government infrastructure.
 
-## MCP Server Design
-The `mcp_server.py` exposes 14 tools categorized by domain:
-- **Company Tools** (`search_company_registry`): Verifies corporate existence.
-- **Website Tools** (`whois_lookup`, `ssl_inspection`, `dns_lookup`, `url_reputation`): Detects newly registered domains or invalid SSLs common in phishing.
-- **Social Tools** (`search_social_sentiment`, `news_search`): Finds public complaints.
-- **Document Tools** (`pdf_metadata`, `document_hash`): Extracts hidden creation dates and checks for known forged file hashes.
+The `security_checkpoint` node implements a **zero-trust gateway** that runs before any LLM is invoked. It operates in four stages:
 
-## Human-in-the-Loop (HITL) Flow
-The `human_review` node in `app/agent.py` acts as an automated safety gate. After the `risk_assessment_agent` calculates the scores, if it detects `CRITICAL` risk or has a `confidence_score` below 70, it sets a `needs_review` flag. The async Python node yields a `RequestInput` event, physically pausing the workflow and popping up a chat box in the UI asking the user: *"Investigation requires human review... Do you approve?"* If the user approves, the workflow resumes and delivers the final report.
+1. **Prompt Injection Detection**: Scans for manipulation keywords — `"ignore previous"`, `"bypass"`, `"override"`, `"you are now"` — and immediately routes to `final_output` via `SECURITY_EVENT` if detected, returning a block message without any LLM call.
 
-## Demo Walkthrough
-1. **Job Offer Verification**: A user uploads an image of an offer letter from "NovaTech Innovations" asking for a ₹5000 deposit. The `coordinator` extracts the text, routes it to the `company_agent` (finds no registry), `website_agent` (finds the domain is 2 days old), and `scam_agent` (flags advance-fee fraud). The `risk_assessment_agent` scores it HIGH risk, triggering the `human_review` gate.
-2. **Security Block**: A user pastes a `.mil` URL and an SSN. The `security_checkpoint` instantly aborts the workflow and returns a block message.
+2. **Domain Blocklisting**: Hard-blocks any investigation involving `.mil` or `.gov` domains, preventing the system from being used as a reconnaissance tool against military or government infrastructure.
 
-## Impact / Value Statement
-TrustLens AI democratizes professional due diligence. By combining multi-agent reasoning with deterministic data fetching, it reduces a manual 30-minute investigation across dozens of websites down to a 15-second automated check. This empowers everyday consumers, job seekers, and freelancers to make safer digital decisions and protect themselves from increasingly sophisticated online fraud.
+3. **PII Scrubbing**: Five regex patterns redact sensitive identifiers before they ever reach the Gemini API:
+   - Credit card numbers → `[REDACTED_CC]`
+   - Social Security Numbers → `[REDACTED_SSN]`
+   - Email addresses → `[REDACTED_EMAIL]`
+   - Phone numbers → `[REDACTED_PHONE]`
+   - API keys in query strings → `[REDACTED_API_KEY]`
+
+4. **Multimodal Preservation**: If the input contains an uploaded image (a multimodal `parts` object), the checkpoint patches only the text part in-place with the scrubbed content and returns the full multimodal object — preserving the image for the coordinator's vision analysis.
+
+---
+
+## Data Models (`app/models.py`)
+
+All inter-agent data exchange uses typed Pydantic models:
+
+- **`EvidenceItem`**: The atomic unit of evidence. Each item carries `source_agent`, `category`, `description`, `confidence` (LOW/MEDIUM/HIGH/CRITICAL), `severity` (POSITIVE/NEUTRAL/NEGATIVE/CRITICAL_RED_FLAG), `verification_status`, and a numeric `risk_impact` score.
+
+- **`RiskAssessment`**: The structured output of `risk_assessment_agent`. Contains `trust_score`, `risk_score`, `confidence_score` (all 0–100), `risk_level` (LOW/MEDIUM/HIGH/CRITICAL), `recommendation`, `uncertainties`, `evidence_weighting`, and the critical `needs_review` boolean that gates human review.
+
+- **`SecurityEvent`**: Produced by `security_checkpoint` on violations. Carries the `violation_reason` that `final_output` surfaces to the user.
+
+- **`InvestigationState`**: A string enum used exclusively for labelling the `timeline` list in session state, providing a readable audit trail of every pipeline stage executed during an investigation.
+
+---
+
+## End-to-End Example: Job Offer Fraud Detection
+
+**User input**: *"Investigate this offer letter from NovaTech Innovations. They want a ₹5000 security deposit for my laptop before joining. The website is novatech-careers.com."*
+
+1. **`security_checkpoint`**: No injection keywords, no blocked domains. PII scrubbed (none found). Routes `SAFE` to coordinator.
+2. **`coordinator`**: Identifies company name ("NovaTech Innovations"), domain ("novatech-careers.com"), and suspicious payment request. Decides to call `company_agent`, `website_agent`, and `scam_agent`.
+3. **`company_agent`** → calls `search_company_registry("NovaTech Innovations")` via MCP → finds no legitimate registration → returns `CRITICAL_RED_FLAG` EvidenceItem.
+4. **`website_agent`** → calls `whois_lookup("novatech-careers.com")` → finds domain registered 2 days ago → returns `CRITICAL_RED_FLAG` EvidenceItem. Also calls `ssl_inspection` and `dns_lookup`.
+5. **`scam_agent`** → no tools; reasons over text → detects advance-fee language ("security deposit"), urgency framing, promises of employment — returns multiple `NEGATIVE` and `CRITICAL_RED_FLAG` EvidenceItems.
+6. **`evidence_aggregator`**: Parses the consolidated JSON from coordinator, stores 7 EvidenceItems in `ctx.state["aggregated_evidence"]`.
+7. **`risk_assessment_agent`**: Weighs evidence — 4 critical red flags, 3 negative items, 0 positive items → `trust_score: 8`, `risk_score: 95`, `confidence_score: 62`, `risk_level: CRITICAL`, `needs_review: true` (confidence below 70 threshold).
+8. **`pre_human_review_state`**: Stores the RiskAssessment in `ctx.state["risk_assessment"]`.
+9. **`explainability_agent`**: Generates a professional Markdown report with Executive Summary, Evidence Summary table, and Suggested Next Steps (do not pay, report to cyber crime cell, verify via official channels).
+10. **`human_review`**: Reads `needs_review: true`. Yields `RequestInput`, pausing workflow. UI displays: *"Investigation requires human review… Do you approve?"* User types "Yes." Workflow resumes, stores approval.
+11. **`final_output`**: Assembles final Markdown: report + Human Review Status + Investigation Timeline. Delivered to browser via SSE.
+
+---
+
+## Production Deployment
+
+TrustLens AI includes a complete production deployment stack:
+
+- **`app/agent_runtime_app.py`**: Extends `AdkApp` from the Vertex AI SDK to create an `AgentEngineApp`. In production, it initialises OpenTelemetry tracing, configures Google Cloud Logging, and switches artifact storage from `InMemoryArtifactService` to `GcsArtifactService` (writing to a GCS bucket). It also exposes a `register_feedback()` operation that accepts user ratings and logs them as structured entries to Cloud Logging.
+
+- **`app/app_utils/telemetry.py`**: Configures OpenTelemetry prompt-response logging in `NO_CONTENT` mode — traces are sent to GCS but actual prompt/response content is never stored, protecting user privacy by design.
+
+- **`deployment/terraform/`**: Infrastructure-as-code for GCP deployment targeting Vertex AI Agent Engine, with separate modules for shared resources and single-project topology.
+
+- **`agents-cli-manifest.yaml`**: Project manifest for the `agents-cli` tool, specifying `deployment_target: agent_runtime` (Vertex AI Agent Engine), `session_type: none` (ADK-managed sessions), and `cicd_runner: skip`.
+
+---
+
+## Demo Scenarios
+
+### Scenario 1 — Job Offer Fraud
+**Input**: Description of a suspicious offer letter with an advance payment request and a newly registered domain.
+**Expected**: Coordinator routes to `company_agent`, `website_agent`, `scam_agent`. Risk assessment outputs CRITICAL level with `needs_review: true`. Workflow pauses for human approval. Final report includes the full evidence breakdown.
+**ADK Dev UI check**: Watch the Graph panel highlight each node in sequence. Open the Events tab to see each sub-agent's raw JSON evidence output in real time.
+
+### Scenario 2 — Security Block
+**Input**: *"My SSN is 123-456-7890. Check if badguy.mil is safe."*
+**Expected**: `security_checkpoint` strips the SSN to `[REDACTED_SSN]`, then detects `.mil` domain, immediately routes `SECURITY_EVENT` to `final_output`. No LLM is ever called.
+**ADK Dev UI check**: The Graph panel traces directly from `security_checkpoint` to `final_output`, skipping all other nodes.
+
+### Scenario 3 — Visual Document Analysis
+**Input**: Upload an image of a physical offer letter; type "Check if this document is genuine."
+**Expected**: `security_checkpoint` preserves the multimodal content. Coordinator (as the vision model) extracts text, company name, visual inconsistencies, and suspicious elements from the image, then routes to `document_agent` and `scam_agent` with the extracted content as text.
+**ADK Dev UI check**: Open the Events tab to see the Coordinator's internal reasoning as it interprets the image and constructs the input payload for sub-agents.
+
+---
+
+## Impact and Value
+
+TrustLens AI demonstrates that Google ADK's multi-agent primitives — `Workflow`, `LlmAgent`, `AgentTool`, `McpToolset`, and `RequestInput` — can be combined to build a production-quality automated investigation system that is both technically rigorous and practically useful.
+
+The system compresses what would take a skilled analyst 30–60 minutes of manual research across a dozen tools into a **15-second automated pipeline**. It applies consistent, structured, evidence-based methodology to every investigation, producing auditable, explainable reports rather than opaque verdicts. It gives everyday users — job seekers, freelancers, small business owners — access to professional-grade due diligence that was previously available only to large enterprises with dedicated security teams.
+
+By separating deterministic logic (security gating, evidence parsing, report assembly) from probabilistic reasoning (agent investigation, risk scoring, report narration), and by enforcing strict data contracts between stages via Pydantic models, TrustLens AI achieves a level of reliability and debuggability that is rare in LLM-powered systems. The architecture is designed to scale: new investigation domains can be added by creating a new `LlmAgent`, registering it as an `AgentTool` on the coordinator, and adding the relevant MCP tools — without touching any other part of the pipeline.
+
+TrustLens AI is not a prototype — it is a complete, deployable digital trust platform built from the ground up on the Google ADK.

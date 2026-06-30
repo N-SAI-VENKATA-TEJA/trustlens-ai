@@ -1,4 +1,4 @@
-﻿TRUSTLENS AI — 5-MINUTE VIDEO SCRIPT
+TRUSTLENS AI — 5-MINUTE VIDEO SCRIPT
 ======================================
 Segments: Problem (0:40) -> Why Agents (0:40) -> Architecture (1:00) -> Demo (1:50) -> Build (0:35) -> Close (0:15)
 ======================================
@@ -125,11 +125,3 @@ TrustLens AI turns a 30-minute specialist investigation into a 15-second
 automated pipeline -- for anyone.
 
 Built on Google ADK. Powered by Gemini. Thank you.
-
-======================================
-QUICK REFERENCE -- DEMO INPUTS
-======================================
-Case 1: "Investigate NovaTech Innovations. They want a Rs.5000 laptop deposit. Website: novatech-careers.com."
-Case 2: "My SSN is 123-45-6789. Check if badguy.mil is safe."
-Case 3: [upload offer letter image] "Check the authenticity of this letter."
-======================================
